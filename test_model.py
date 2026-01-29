@@ -4,10 +4,12 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 print("Loading abliterated model...")
-tokenizer = AutoTokenizer.from_pretrained("./output", trust_remote_code=True)
+
+# Load tokenizer from base model 
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen-1_8B-Chat", trust_remote_code=True)
 tokenizer.pad_token = tokenizer.eos_token
 
-# Load base model architecture, then load our modified weights
+# Load base model architecture
 model = AutoModelForCausalLM.from_pretrained(
     "Qwen/Qwen-1_8B-Chat",
     torch_dtype=torch.bfloat16,
@@ -15,11 +17,12 @@ model = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True
 )
 
-# Load our abliterated weights
+# Load our abliterated weights on top
+print("Loading abliterated weights...")
 state_dict = torch.load("./output/weights.pt", map_location="cuda")
 model.load_state_dict(state_dict, strict=False)
 
-print("Model loaded! Type prompts to test (type 'quit' to exit)\n")
+print("\n✅ Model loaded! Type prompts to test (type 'quit' to exit)\n")
 
 while True:
     prompt = input("📝 Prompt: ").strip()
