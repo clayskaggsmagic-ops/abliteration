@@ -39,8 +39,8 @@ Examples:
     parser.add_argument(
         "--model", "-m",
         type=str,
-        default="Qwen/Qwen2.5-0.5B-Instruct",
-        help="HuggingFace model path or local path (default: Qwen/Qwen2.5-0.5B-Instruct)"
+        default=\"Qwen/Qwen-1_8B-Chat\",
+        help=\"HuggingFace model path or local path (default: Qwen/Qwen-1_8B-Chat)\"
     )
     
     parser.add_argument(
