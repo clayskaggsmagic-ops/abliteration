@@ -3,6 +3,8 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+OUTPUT_PATH = "./output/abliterated_model"
+
 print("Loading abliterated model...")
 
 # Load tokenizer from base model 
@@ -19,7 +21,7 @@ model = AutoModelForCausalLM.from_pretrained(
 
 # Load our abliterated weights on top
 print("Loading abliterated weights...")
-state_dict = torch.load("./output/weights.pt", map_location="cuda")
+state_dict = torch.load(f"{OUTPUT_PATH}/weights.pt", map_location="cuda")
 model.load_state_dict(state_dict, strict=False)
 
 print("\n✅ Model loaded! Type prompts to test (type 'quit' to exit)\n")
