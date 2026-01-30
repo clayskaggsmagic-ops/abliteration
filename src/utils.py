@@ -62,13 +62,36 @@ def _generate_with_hooks(
     )
     all_toks[:, :toks.shape[1]] = toks.to(device)
     
-    # Get EOS token ID for early stopping
-    eos_token_id = model.tokenizer.eos_token_id
-    if eos_token_id is None:
-        eos_token_id = model.tokenizer.convert_tokens_to_ids('<|im_end|>')
+    # Get stop token IDs for early stopping
+    stop_token_ids = set()
+    
+    # EOS token
+    if model.tokenizer.eos_token_id is not None:
+        stop_token_ids.add(model.tokenizer.eos_token_id)
+    
+    # ChatML end token
+    try:
+        im_end_id = model.tokenizer.convert_tokens_to_ids('<|im_end|>')
+        if im_end_id != model.tokenizer.unk_token_id:
+            stop_token_ids.add(im_end_id)
+    except:
+        pass
+    
+    # ChatML start token (means new turn starting)
+    try:
+        im_start_id = model.tokenizer.convert_tokens_to_ids('<|im_start|>')
+        if im_start_id != model.tokenizer.unk_token_id:
+            stop_token_ids.add(im_start_id)
+    except:
+        pass
+    
+    # Default fallback
+    if not stop_token_ids:
+        stop_token_ids.add(model.tokenizer.eos_token_id or 0)
     
     # Track which sequences have finished
     finished = torch.zeros(toks.shape[0], dtype=torch.bool, device=device)
+    eos_token_id = list(stop_token_ids)[0]  # For filling finished sequences
     
     for i in range(max_tokens_generated):
         with model.hooks(fwd_hooks=fwd_hooks):
@@ -79,17 +102,30 @@ def _generate_with_hooks(
             next_tokens = torch.where(finished, eos_token_id, next_tokens)
             all_toks[:, -max_tokens_generated + i] = next_tokens
             
-            # Check for EOS
-            finished = finished | (next_tokens == eos_token_id)
+            # Check for any stop token
+            for stop_id in stop_token_ids:
+                finished = finished | (next_tokens == stop_id)
             
             # Stop if all sequences are done
             if finished.all():
                 break
     
-    return model.tokenizer.batch_decode(
+    # Decode and clean up
+    results = model.tokenizer.batch_decode(
         all_toks[:, toks.shape[1]:], 
         skip_special_tokens=True
     )
+    
+    # Post-process: strip anything after conversation turn markers
+    cleaned = []
+    for text in results:
+        # Stop at Human: or similar turn markers
+        for marker in ['Human:', 'human:', 'User:', 'user:', '\n\n\n']:
+            if marker in text:
+                text = text.split(marker)[0]
+        cleaned.append(text.strip())
+    
+    return cleaned
 
 
 def get_generations(
