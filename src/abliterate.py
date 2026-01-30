@@ -422,30 +422,28 @@ class Abliterator:
         in the direction specified. This is how we permanently remove
         the refusal direction from the model.
         
-        Math: W' = W - d̂(d̂ᵀW)
+        Matches MLaBonne/FailSpy implementation exactly:
+        proj = einops.einsum(matrix, vec.view(-1, 1), '... d_model, d_model single -> ... single') * vec
+        return matrix - proj
         
         Args:
             matrix: Weight matrix to modify
-            direction: Direction to project out
+            direction: Direction to project out (should be unit normalized)
             
         Returns:
             Orthogonalized matrix
         """
         direction = direction.to(matrix.device, matrix.dtype)
         
-        # Compute projection: d̂(d̂ᵀW)
+        # Match MLaBonne's exact implementation:
+        # proj = einops.einsum(matrix, vec.view(-1, 1), '... d_model, d_model single -> ... single') * vec
         proj = einops.einsum(
-            direction,
-            matrix,
-            'd_model, ... d_model -> ...'
-        )
+            matrix, 
+            direction.view(-1, 1), 
+            '... d_model, d_model single -> ... single'
+        ) * direction
         
-        # Subtract projection from matrix
-        return matrix - einops.einsum(
-            proj,
-            direction,
-            '..., d_model -> ... d_model'
-        )
+        return matrix - proj
     
     def apply_ablation(self, direction: Optional[Tensor] = None):
         """
@@ -660,7 +658,7 @@ class Abliterator:
     def compute_target_directions(
         self, 
         target: AblationTarget,
-        activation_types: List[str] = ['resid_pre', 'resid_mid', 'resid_post']
+        activation_types: List[str] = ['resid_pre']
     ):
         """
         Compute directions for a specific target from its cached activations.
