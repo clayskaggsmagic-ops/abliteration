@@ -92,11 +92,33 @@ def _generate_with_hooks(
     # Track which sequences have finished
     finished = torch.zeros(toks.shape[0], dtype=torch.bool, device=device)
     eos_token_id = list(stop_token_ids)[0]  # For filling finished sequences
+    # Track recent tokens for repetition penalty
+    recent_window = 10  # Look at last N tokens
+    repetition_penalty = 1.5  # Penalty multiplier for repeated tokens
     
     for i in range(max_tokens_generated):
         with model.hooks(fwd_hooks=fwd_hooks):
             logits = model(all_toks[:, :-max_tokens_generated + i])
-            next_tokens = logits[:, -1, :].argmax(dim=-1)  # greedy sampling
+            last_logits = logits[:, -1, :]
+            
+            # Apply repetition penalty
+            if i >= 1:
+                # Get recently generated tokens
+                start_pos = max(0, -max_tokens_generated + i - recent_window)
+                end_pos = -max_tokens_generated + i
+                recent_toks = all_toks[:, start_pos:end_pos]
+                
+                # Penalize tokens that appeared recently
+                for batch_idx in range(recent_toks.shape[0]):
+                    for tok_id in recent_toks[batch_idx].unique():
+                        if tok_id != 0:  # Don't penalize padding
+                            count = (recent_toks[batch_idx] == tok_id).sum().item()
+                            if last_logits[batch_idx, tok_id] > 0:
+                                last_logits[batch_idx, tok_id] /= (repetition_penalty ** count)
+                            else:
+                                last_logits[batch_idx, tok_id] *= (repetition_penalty ** count)
+            
+            next_tokens = last_logits.argmax(dim=-1)  # greedy sampling
             
             # Don't update finished sequences
             next_tokens = torch.where(finished, eos_token_id, next_tokens)

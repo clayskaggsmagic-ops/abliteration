@@ -477,7 +477,13 @@ class Abliterator:
         )
         
         # Orthogonalize each layer's outputs
-        for layer_idx in tqdm(range(self.model.cfg.n_layers), desc="   • Orthogonalizing layers"):
+        # Skip first 2 and last 2 layers - FailSpy: "dramatic effects on outputs"
+        skip_first = 2
+        skip_last = 2
+        start_layer = skip_first
+        end_layer = self.model.cfg.n_layers - skip_last
+        
+        for layer_idx in tqdm(range(start_layer, end_layer), desc="   • Orthogonalizing layers"):
             block = self.model.blocks[layer_idx]
             
             # MLP output projection
@@ -490,7 +496,7 @@ class Abliterator:
                 block.attn.W_O, direction
             )
         
-        print("   ✓ Ablation complete!")
+        print(f"   ✓ Ablation complete! (modified layers {start_layer}-{end_layer-1})")
     
     def generate(
         self,
@@ -698,47 +704,57 @@ class Abliterator:
         n_test: int = 4,
     ) -> Tensor:
         """
-        Find the best direction for a specific target.
+        Find the best direction for a specific target using token-based scoring.
         """
         print(f"\n🔍 Finding best {target.value} direction...")
         
         if target not in self.target_directions:
             raise ValueError(f"No directions computed for {target.value}")
         
-        # Flatten all candidates with scores
+        # Get negative tokens - tokens we DON'T want to see
+        # These indicate the unwanted behavior is still present
+        tokenizer = self.model.tokenizer
+        
+        if target == AblationTarget.IDENTITY:
+            # Tokens indicating AI self-identification
+            negative_tokens = []
+            for word in [" AI", " ai", "AI", " language", " model", " assistant", " chatbot"]:
+                try:
+                    toks = tokenizer.encode(word, add_special_tokens=False)
+                    negative_tokens.extend(toks)
+                except:
+                    pass
+        elif target == AblationTarget.ETHICS:
+            # Tokens indicating ethical disclaimers
+            negative_tokens = []
+            for word in [" cannot", " can't", " shouldn't", " harmful", " ethical", " illegal", " dangerous"]:
+                try:
+                    toks = tokenizer.encode(word, add_special_tokens=False)
+                    negative_tokens.extend(toks)
+                except:
+                    pass
+        else:  # REFUSAL
+            negative_tokens = []
+            for word in [" cannot", " can't", " won't", " sorry", " apologize", " refuse"]:
+                try:
+                    toks = tokenizer.encode(word, add_special_tokens=False)
+                    negative_tokens.extend(toks)
+                except:
+                    pass
+        
+        negative_tokens = list(set(negative_tokens))
+        print(f"   Negative tokens ({len(negative_tokens)}): {negative_tokens[:10]}...")
+        
+        # Flatten all candidates - score by norm instead of mean
         candidates = []
         for act_type, dirs in self.target_directions[target].items():
             for d in dirs:
-                score = abs(d['direction'].mean().item())
+                score = d['direction'].norm().item()
                 candidates.append((score, d['direction'], d))
         
         candidates.sort(key=lambda x: x[0], reverse=True)
         candidates = candidates[:n_candidates]
         test_prompts = test_prompts[:n_test]
-        
-        # Define detection phrases per target
-        if target == AblationTarget.IDENTITY:
-            detect_phrases = [
-                "i am an ai", "i'm an ai", "i am a language model", 
-                "i'm a language model", "artificial intelligence",
-                "i'm an artificial", "i am an artificial", 
-                "i'm not a human", "i am not a human", "i'm a chatbot",
-                "i am a chatbot", "i'm an assistant", "i am an assistant",
-                "i don't have a physical", "i don't have feelings"
-            ]
-        elif target == AblationTarget.ETHICS:
-            detect_phrases = [
-                "i must note", "i should mention", "it's important to",
-                "please note", "i want to emphasize", "ethical", 
-                "responsible", "harmful", "dangerous", "illegal",
-                "i cannot", "i can't", "disclaimer", "caution"
-            ]
-        else:  # REFUSAL
-            detect_phrases = [
-                "i can't", "i cannot", "i'm not able", "i won't",
-                "i will not", "sorry", "apologize", "against my",
-                "can't assist", "cannot assist", "decline", "refuse"
-            ]
         
         best_score = -float('inf')
         best_direction = None
@@ -749,12 +765,12 @@ class Abliterator:
             
             direction_score = 0
             for gen in generations:
-                gen_lower = gen.lower()
-                is_behavior_present = any(phrase in gen_lower for phrase in detect_phrases)
-                if not is_behavior_present:
-                    direction_score += min(len(gen), 200)
-                else:
-                    direction_score -= 50
+                # Tokenize generation and count negative tokens
+                gen_tokens = tokenizer.encode(gen, add_special_tokens=False)
+                neg_count = sum(1 for t in gen_tokens if t in negative_tokens)
+                
+                # Score: reward length, penalize negative tokens
+                direction_score += min(len(gen), 200) - (neg_count * 30)
             
             if direction_score > best_score:
                 best_score = direction_score
@@ -791,16 +807,17 @@ class Abliterator:
         if not directions_to_apply:
             raise ValueError("No directions found to apply!")
         
+        # Skip first 2 and last 2 layers - prevents repetition bugs
+        skip_first = 2
+        skip_last = 2
+        start_layer = skip_first
+        end_layer = self.model.cfg.n_layers - skip_last
+        
         for target, direction in directions_to_apply:
-            print(f"   • Applying {target.value} ablation...")
+            print(f"   • Applying {target.value} ablation to layers {start_layer}-{end_layer-1}...")
             
-            # Orthogonalize embedding matrix
-            self.model.embed.W_E.data = self.get_orthogonalized_matrix(
-                self.model.embed.W_E, direction
-            )
-            
-            # Orthogonalize each layer
-            for layer_idx in range(self.model.cfg.n_layers):
+            # Orthogonalize middle layers only
+            for layer_idx in range(start_layer, end_layer):
                 block = self.model.blocks[layer_idx]
                 block.mlp.W_out.data = self.get_orthogonalized_matrix(
                     block.mlp.W_out, direction
