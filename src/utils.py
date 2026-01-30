@@ -62,11 +62,29 @@ def _generate_with_hooks(
     )
     all_toks[:, :toks.shape[1]] = toks.to(device)
     
+    # Get EOS token ID for early stopping
+    eos_token_id = model.tokenizer.eos_token_id
+    if eos_token_id is None:
+        eos_token_id = model.tokenizer.convert_tokens_to_ids('<|im_end|>')
+    
+    # Track which sequences have finished
+    finished = torch.zeros(toks.shape[0], dtype=torch.bool, device=device)
+    
     for i in range(max_tokens_generated):
         with model.hooks(fwd_hooks=fwd_hooks):
             logits = model(all_toks[:, :-max_tokens_generated + i])
             next_tokens = logits[:, -1, :].argmax(dim=-1)  # greedy sampling
+            
+            # Don't update finished sequences
+            next_tokens = torch.where(finished, eos_token_id, next_tokens)
             all_toks[:, -max_tokens_generated + i] = next_tokens
+            
+            # Check for EOS
+            finished = finished | (next_tokens == eos_token_id)
+            
+            # Stop if all sequences are done
+            if finished.all():
+                break
     
     return model.tokenizer.batch_decode(
         all_toks[:, toks.shape[1]:], 
