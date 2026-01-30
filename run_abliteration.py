@@ -145,6 +145,29 @@ Examples:
         responses = abl.generate([prompt])
         print(f"\n📝 Prompt: {prompt}")
         print(f"🤖 Response: {responses[0][:200]}...")
+    
+    # Interactive chat mode
+    print("\n" + "=" * 60)
+    print("💬 INTERACTIVE CHAT MODE")
+    print("Type a prompt and press Enter to generate.")
+    print("Type 'quit' to exit.")
+    print("=" * 60 + "\n")
+    
+    while True:
+        try:
+            prompt = input("📝 You: ").strip()
+            if prompt.lower() in ['quit', 'exit', 'q']:
+                print("\nGoodbye!")
+                break
+            if not prompt:
+                continue
+                
+            responses = abl.generate([prompt], max_tokens=256)
+            print(f"🤖 Model: {responses[0]}\n")
+            
+        except KeyboardInterrupt:
+            print("\n\nExiting...")
+            break
 
 
 if __name__ == "__main__":
