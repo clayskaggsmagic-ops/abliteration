@@ -2,8 +2,10 @@
 # Pin torch/torchvision to avoid version mismatch on RunPod templates
 torch==2.2.0
 torchvision==0.17.0
-transformers>=4.35.0
+transformers==4.36.0
 transformer_lens>=1.11.0
+# NOTE: If transformers_stream_generator is installed, uninstall it:
+#   pip uninstall transformers_stream_generator -y
 einops>=0.7.0
 jaxtyping>=0.2.25
 
