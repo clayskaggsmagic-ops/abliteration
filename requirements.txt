@@ -1,5 +1,7 @@
 # Core dependencies for abliteration
-torch>=2.0.0
+# Pin torch/torchvision to avoid version mismatch on RunPod templates
+torch==2.2.0
+torchvision==0.17.0
 transformers>=4.35.0
 transformer_lens>=1.11.0
 einops>=0.7.0
