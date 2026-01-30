@@ -100,8 +100,8 @@ def _generate_with_hooks(
     punct_tokens = set()
     for char in ['!', '?', '.', '"', "'"]:
         try:
-            toks = model.tokenizer.encode(char, add_special_tokens=False)
-            punct_tokens.update(toks)
+            char_toks = model.tokenizer.encode(char, add_special_tokens=False)
+            punct_tokens.update(char_toks)
         except:
             pass
     
