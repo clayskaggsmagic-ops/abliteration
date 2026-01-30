@@ -17,6 +17,7 @@ import functools
 import torch
 import einops
 import gc
+from enum import Enum
 from typing import List, Dict, Tuple, Optional
 from tqdm import tqdm
 from torch import Tensor
@@ -27,6 +28,13 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from .chat_templates import QWEN_CHAT_TEMPLATE
 from .utils import clear_memory, direction_ablation_hook, get_generations
+
+
+class AblationTarget(Enum):
+    """Behavioral directions that can be ablated from the model."""
+    REFUSAL = "refusal"      # "I can't/won't do that"
+    IDENTITY = "identity"    # "I am an AI assistant"
+    ETHICS = "ethics"        # Ethical disclaimers and moralizing
 
 
 class Abliterator:
@@ -71,6 +79,15 @@ class Abliterator:
         
         # These will be populated during the abliteration process
         self.model: Optional[HookedTransformer] = None
+        
+        # Per-target storage for multi-behavior ablation
+        # Each target (refusal, identity, ethics) has its own activations and directions
+        self.target_activations: Dict[AblationTarget, Dict[str, Dict[str, Tensor]]] = {}
+        self.target_directions: Dict[AblationTarget, Dict[str, List[Tensor]]] = {}
+        self.target_best_direction: Dict[AblationTarget, Tensor] = {}
+        self.target_best_info: Dict[AblationTarget, dict] = {}
+        
+        # Legacy single-target support (for backwards compatibility)
         self.harmful_activations: Dict[str, Tensor] = {}
         self.harmless_activations: Dict[str, Tensor] = {}
         self.refusal_directions: Dict[str, List[Tensor]] = {}
@@ -537,8 +554,263 @@ class Abliterator:
             if self.best_direction_info:
                 f.write(f"Best direction: layer {self.best_direction_info['layer']}, "
                        f"{self.best_direction_info['act_type']}\n")
+            # Save multi-target info
+            for target, info in self.target_best_info.items():
+                f.write(f"{target.value} direction: layer {info['layer']}, "
+                       f"{info['act_type']}\n")
         
         print(f"   ✓ Model saved!")
+    
+    def collect_target_activations(
+        self,
+        target: AblationTarget,
+        positive_prompts: List[str],
+        negative_prompts: List[str],
+        batch_size: int = 32,
+        max_samples: Optional[int] = None,
+    ):
+        """
+        Collect activations for a specific ablation target.
+        
+        Positive prompts = prompts where the behavior SHOWS (e.g., "I am an AI")
+        Negative prompts = prompts where the behavior is ABSENT (e.g., stays in character)
+        
+        Args:
+            target: Which behavior to collect activations for
+            positive_prompts: Prompts that trigger the behavior
+            negative_prompts: Prompts that don't trigger the behavior
+            batch_size: Batch size for processing
+            max_samples: Limit samples per category
+        """
+        print(f"\n📊 Collecting activations for {target.value}...")
+        
+        # Limit samples
+        n_samples = min(
+            len(positive_prompts), 
+            len(negative_prompts),
+            max_samples or float('inf')
+        )
+        n_samples = int(n_samples)
+        
+        positive_prompts = positive_prompts[:n_samples]
+        negative_prompts = negative_prompts[:n_samples]
+        
+        print(f"   Using {n_samples} samples per category")
+        
+        # Tokenize all prompts together
+        all_toks = self.tokenize(positive_prompts + negative_prompts)
+        positive_toks = all_toks[:n_samples]
+        negative_toks = all_toks[n_samples:]
+        
+        # Storage
+        positive = {}
+        negative = {}
+        
+        # Process in batches
+        n_batches = (n_samples + batch_size - 1) // batch_size
+        
+        for i in tqdm(range(n_batches), desc=f"   Caching {target.value} activations"):
+            start = i * batch_size
+            end = min(start + batch_size, n_samples)
+            
+            _, positive_cache = self.model.run_with_cache(
+                positive_toks[start:end].to(self.device),
+                names_filter=lambda name: 'resid' in name,
+                device='cpu',
+                reset_hooks_end=True,
+            )
+            
+            _, negative_cache = self.model.run_with_cache(
+                negative_toks[start:end].to(self.device),
+                names_filter=lambda name: 'resid' in name,
+                device='cpu',
+                reset_hooks_end=True,
+            )
+            
+            for key in positive_cache:
+                if key not in positive:
+                    positive[key] = [positive_cache[key]]
+                    negative[key] = [negative_cache[key]]
+                else:
+                    positive[key].append(positive_cache[key])
+                    negative[key].append(negative_cache[key])
+            
+            del positive_cache, negative_cache
+            clear_memory()
+        
+        # Store for this target
+        self.target_activations[target] = {
+            'positive': {k: torch.cat(v) for k, v in positive.items()},
+            'negative': {k: torch.cat(v) for k, v in negative.items()}
+        }
+        
+        print(f"   ✓ Collected {target.value} activations at {len(positive)} hook points")
+    
+    def compute_target_directions(
+        self, 
+        target: AblationTarget,
+        activation_types: List[str] = ['resid_pre', 'resid_mid', 'resid_post']
+    ):
+        """
+        Compute directions for a specific target from its cached activations.
+        """
+        print(f"\n🧮 Computing {target.value} directions...")
+        
+        if target not in self.target_activations:
+            raise ValueError(f"No activations collected for {target.value}")
+        
+        positive_acts = self.target_activations[target]['positive']
+        negative_acts = self.target_activations[target]['negative']
+        
+        directions = {act_type: [] for act_type in activation_types}
+        
+        for layer in range(1, self.model.cfg.n_layers):
+            for act_type in activation_types:
+                hook_name = f'blocks.{layer}.hook_{act_type}'
+                
+                if hook_name not in positive_acts:
+                    continue
+                
+                pos_acts = positive_acts[hook_name][:, -1, :]
+                neg_acts = negative_acts[hook_name][:, -1, :]
+                
+                pos_mean = pos_acts.mean(dim=0)
+                neg_mean = neg_acts.mean(dim=0)
+                
+                direction = pos_mean - neg_mean
+                direction = direction / direction.norm()
+                
+                directions[act_type].append({
+                    'direction': direction,
+                    'layer': layer,
+                    'act_type': act_type
+                })
+        
+        self.target_directions[target] = directions
+        total = sum(len(v) for v in directions.values())
+        print(f"   ✓ Computed {total} candidate directions for {target.value}")
+    
+    def find_target_direction(
+        self,
+        target: AblationTarget,
+        test_prompts: List[str],
+        n_candidates: int = 40,
+        n_test: int = 4,
+    ) -> Tensor:
+        """
+        Find the best direction for a specific target.
+        """
+        print(f"\n🔍 Finding best {target.value} direction...")
+        
+        if target not in self.target_directions:
+            raise ValueError(f"No directions computed for {target.value}")
+        
+        # Flatten all candidates with scores
+        candidates = []
+        for act_type, dirs in self.target_directions[target].items():
+            for d in dirs:
+                score = abs(d['direction'].mean().item())
+                candidates.append((score, d['direction'], d))
+        
+        candidates.sort(reverse=True)
+        candidates = candidates[:n_candidates]
+        test_prompts = test_prompts[:n_test]
+        
+        # Define detection phrases per target
+        if target == AblationTarget.IDENTITY:
+            detect_phrases = [
+                "i am an ai", "i'm an ai", "i am a language model", 
+                "i'm a language model", "artificial intelligence",
+                "i'm an artificial", "i am an artificial", 
+                "i'm not a human", "i am not a human", "i'm a chatbot",
+                "i am a chatbot", "i'm an assistant", "i am an assistant",
+                "i don't have a physical", "i don't have feelings"
+            ]
+        elif target == AblationTarget.ETHICS:
+            detect_phrases = [
+                "i must note", "i should mention", "it's important to",
+                "please note", "i want to emphasize", "ethical", 
+                "responsible", "harmful", "dangerous", "illegal",
+                "i cannot", "i can't", "disclaimer", "caution"
+            ]
+        else:  # REFUSAL
+            detect_phrases = [
+                "i can't", "i cannot", "i'm not able", "i won't",
+                "i will not", "sorry", "apologize", "against my",
+                "can't assist", "cannot assist", "decline", "refuse"
+            ]
+        
+        best_score = -float('inf')
+        best_direction = None
+        best_info = None
+        
+        for score, direction, info in tqdm(candidates, desc=f"   Testing {target.value} directions"):
+            generations = self.test_intervention(test_prompts, direction)
+            
+            direction_score = 0
+            for gen in generations:
+                gen_lower = gen.lower()
+                is_behavior_present = any(phrase in gen_lower for phrase in detect_phrases)
+                if not is_behavior_present:
+                    direction_score += min(len(gen), 200)
+                else:
+                    direction_score -= 50
+            
+            if direction_score > best_score:
+                best_score = direction_score
+                best_direction = direction
+                best_info = info
+                print(f"   New best: layer {info['layer']}, {info['act_type']} (score: {direction_score})")
+        
+        if best_direction is None:
+            best_direction = candidates[0][1]
+            best_info = candidates[0][2]
+        
+        self.target_best_direction[target] = best_direction
+        self.target_best_info[target] = best_info
+        
+        print(f"   ✓ Best {target.value} direction: layer {best_info['layer']}, "
+              f"{best_info['act_type']}")
+        
+        return best_direction
+    
+    def apply_multi_ablation(self, targets: List[AblationTarget]):
+        """
+        Apply ablation for multiple targets by orthogonalizing weights
+        against all target directions.
+        """
+        print(f"\n⚡ Applying multi-target ablation...")
+        
+        directions_to_apply = []
+        for target in targets:
+            if target in self.target_best_direction:
+                directions_to_apply.append((target, self.target_best_direction[target]))
+            elif target == AblationTarget.REFUSAL and self.best_direction is not None:
+                directions_to_apply.append((target, self.best_direction))
+        
+        if not directions_to_apply:
+            raise ValueError("No directions found to apply!")
+        
+        for target, direction in directions_to_apply:
+            print(f"   • Applying {target.value} ablation...")
+            
+            # Orthogonalize embedding matrix
+            self.model.embed.W_E.data = self.get_orthogonalized_matrix(
+                self.model.embed.W_E, direction
+            )
+            
+            # Orthogonalize each layer
+            for layer_idx in range(self.model.cfg.n_layers):
+                block = self.model.blocks[layer_idx]
+                block.mlp.W_out.data = self.get_orthogonalized_matrix(
+                    block.mlp.W_out, direction
+                )
+                block.attn.W_O.data = self.get_orthogonalized_matrix(
+                    block.attn.W_O, direction
+                )
+        
+        print(f"   ✓ Applied ablation for {len(directions_to_apply)} targets!")
+
 
 
 def run_abliteration(
