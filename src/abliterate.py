@@ -712,7 +712,7 @@ class Abliterator:
                 score = abs(d['direction'].mean().item())
                 candidates.append((score, d['direction'], d))
         
-        candidates.sort(reverse=True)
+        candidates.sort(key=lambda x: x[0], reverse=True)
         candidates = candidates[:n_candidates]
         test_prompts = test_prompts[:n_test]
         
