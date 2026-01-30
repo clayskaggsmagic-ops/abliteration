@@ -105,57 +105,61 @@ def _generate_with_hooks(
         except:
             pass
     
-    for i in range(max_tokens_generated):
-        with model.hooks(fwd_hooks=fwd_hooks):
-            logits = model(all_toks[:, :-max_tokens_generated + i])
-            last_logits = logits[:, -1, :]
-            
-            # Apply AGGRESSIVE repetition penalty
-            if i >= 1:
-                # Get recently generated tokens
-                gen_start = toks.shape[1]
-                gen_end = gen_start + i
-                recent_toks = all_toks[:, max(gen_start, gen_end - recent_window):gen_end]
+    try:
+        for i in range(max_tokens_generated):
+            with model.hooks(fwd_hooks=fwd_hooks):
+                logits = model(all_toks[:, :-max_tokens_generated + i])
+                last_logits = logits[:, -1, :]
                 
-                # Penalize tokens that appeared recently
-                for batch_idx in range(recent_toks.shape[0]):
-                    for tok_id in recent_toks[batch_idx].unique():
-                        if tok_id == 0:
-                            continue
-                        count = (recent_toks[batch_idx] == tok_id).sum().item()
-                        
-                        # Extra-strong penalty for punctuation (prevents !!!! loops)
-                        penalty = repetition_penalty ** count
-                        if tok_id.item() in punct_tokens:
-                            penalty = penalty ** 2  # Square the penalty for punctuation
-                        
-                        if last_logits[batch_idx, tok_id] > 0:
-                            last_logits[batch_idx, tok_id] /= penalty
-                        else:
-                            last_logits[batch_idx, tok_id] *= penalty
+                # Apply AGGRESSIVE repetition penalty
+                if i >= 1:
+                    # Get recently generated tokens
+                    gen_start = toks.shape[1]
+                    gen_end = gen_start + i
+                    recent_toks = all_toks[:, max(gen_start, gen_end - recent_window):gen_end]
+                    
+                    # Penalize tokens that appeared recently
+                    for batch_idx in range(recent_toks.shape[0]):
+                        for tok_id in recent_toks[batch_idx].unique():
+                            if tok_id == 0:
+                                continue
+                            count = (recent_toks[batch_idx] == tok_id).sum().item()
+                            
+                            # Extra-strong penalty for punctuation (prevents !!!! loops)
+                            penalty = repetition_penalty ** count
+                            if tok_id.item() in punct_tokens:
+                                penalty = penalty ** 2  # Square the penalty for punctuation
+                            
+                            if last_logits[batch_idx, tok_id] > 0:
+                                last_logits[batch_idx, tok_id] /= penalty
+                            else:
+                                last_logits[batch_idx, tok_id] *= penalty
+                    
+                    # Detect punctuation loops - if last 3 tokens are same punctuation, stop
+                    if i >= 3:
+                        last_3 = all_toks[:, gen_end-3:gen_end]
+                        for batch_idx in range(last_3.shape[0]):
+                            if last_3[batch_idx, 0] == last_3[batch_idx, 1] == last_3[batch_idx, 2]:
+                                tok_val = last_3[batch_idx, 0].item()
+                                if tok_val in punct_tokens:
+                                    finished[batch_idx] = True
                 
-                # Detect punctuation loops - if last 3 tokens are same punctuation, stop
-                if i >= 3:
-                    last_3 = all_toks[:, gen_end-3:gen_end]
-                    for batch_idx in range(last_3.shape[0]):
-                        if last_3[batch_idx, 0] == last_3[batch_idx, 1] == last_3[batch_idx, 2]:
-                            tok_val = last_3[batch_idx, 0].item()
-                            if tok_val in punct_tokens:
-                                finished[batch_idx] = True
-            
-            next_tokens = last_logits.argmax(dim=-1)  # greedy sampling
-            
-            # Don't update finished sequences
-            next_tokens = torch.where(finished, eos_token_id, next_tokens)
-            all_toks[:, -max_tokens_generated + i] = next_tokens
-            
-            # Check for any stop token
-            for stop_id in stop_token_ids:
-                finished = finished | (next_tokens == stop_id)
-            
-            # Stop if all sequences are done
-            if finished.all():
-                break
+                next_tokens = last_logits.argmax(dim=-1)  # greedy sampling
+                
+                # Don't update finished sequences
+                next_tokens = torch.where(finished, eos_token_id, next_tokens)
+                all_toks[:, -max_tokens_generated + i] = next_tokens
+                
+                # Check for any stop token
+                for stop_id in stop_token_ids:
+                    finished = finished | (next_tokens == stop_id)
+                
+                # Stop if all sequences are done
+                if finished.all():
+                    break
+    
+    except KeyboardInterrupt:
+        print("\n⚠️  Generation interrupted by user")
     
     # Decode and clean up
     results = model.tokenizer.batch_decode(
