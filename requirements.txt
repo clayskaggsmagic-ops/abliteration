@@ -1,12 +1,18 @@
-# Abliteration - Version constraints matching transformer_lens 2.17.0
-# Source: https://pypi.org/pypi/transformer-lens/2.17.0/json
+# Abliteration - Pinned versions for RunPod compatibility
+# Tested with: RunPod PyTorch 2.1 template, CUDA 12.1+
+# Last updated: 2026-01-30
 
+# Core ML stack - pinned for compatibility
+torch>=2.6.0
 numpy>=1.24,<2
-torch>=2.6
+
+# TransformerLens and transformers - pinned versions
+transformer_lens==2.17.0
 transformers>=4.51
 huggingface-hub>=0.23.2,<1.0
 transformers-stream-generator>=0.0.5,<0.0.6
-transformer_lens==2.17.0
+
+# Utilities
 accelerate>=0.23.0
 einops>=0.6.0
 jaxtyping>=0.2.11
