@@ -39,8 +39,8 @@ Examples:
     parser.add_argument(
         "--model", "-m",
         type=str,
-        default="Qwen/Qwen2.5-1.5B-Instruct",
-        help="HuggingFace model path or local path (default: Qwen/Qwen2.5-1.5B-Instruct)"
+        default="Qwen/Qwen2.5-7B-Instruct",
+        help="HuggingFace model path or local path (default: Qwen/Qwen2.5-7B-Instruct)"
     )
     
     parser.add_argument(
@@ -67,8 +67,8 @@ Examples:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=16,
-        help="Batch size for processing (default: 16, reduce if OOM)"
+        default=8,
+        help="Batch size for processing (default: 8, reduce if OOM)"
     )
     
     parser.add_argument(
