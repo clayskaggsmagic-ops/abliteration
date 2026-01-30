@@ -220,7 +220,7 @@ class Abliterator:
         
         print(f"   ✓ Collected activations at {len(self.harmful_activations)} hook points")
     
-    def compute_refusal_directions(self, activation_types: List[str] = ['resid_pre']):
+    def compute_refusal_directions(self, activation_types: List[str] = ['resid_pre', 'resid_mid', 'resid_post']):
         """
         Compute potential refusal directions from cached activations.
         
@@ -319,14 +319,15 @@ class Abliterator:
     def find_best_direction(
         self,
         test_prompts: List[str],
-        n_candidates: int = 20,
+        n_candidates: int = 40,
         n_test: int = 4,
     ) -> Tensor:
         """
         Find the best refusal direction by testing top candidates.
         
         Tests each candidate direction and returns the one that most
-        effectively removes refusal behavior.
+        effectively removes refusal behavior (produces longest responses
+        without refusal phrases).
         
         Args:
             test_prompts: Harmful prompts for testing
@@ -341,20 +342,54 @@ class Abliterator:
         scored = self._score_directions()[:n_candidates]
         test_prompts = test_prompts[:n_test]
         
-        results = []
+        # Refusal phrases to detect - if response contains these, direction didn't work
+        refusal_phrases = [
+            "i can't", "i cannot", "i'm not able", "i am not able",
+            "i won't", "i will not", "i'm unable", "i am unable",
+            "sorry", "apologize", "against my", "not appropriate",
+            "can't assist", "cannot assist", "can't help", "cannot help",
+            "decline", "refuse", "not going to", "won't be able"
+        ]
         
-        for score, direction, info in tqdm(scored, desc="   Testing directions"):
+        best_score = -1
+        best_direction = None
+        best_info = None
+        
+        print(f"   Testing with {n_test} harmful prompts...")
+        
+        for idx, (score, direction, info) in enumerate(tqdm(scored, desc="   Testing directions")):
             generations = self.test_intervention(test_prompts, direction)
-            results.append((direction, info, generations))
+            
+            # Score: count responses that don't contain refusal phrases
+            # and prefer longer responses (indicating actual content)
+            direction_score = 0
+            for gen in generations:
+                gen_lower = gen.lower()
+                is_refusal = any(phrase in gen_lower for phrase in refusal_phrases)
+                if not is_refusal:
+                    # Non-refusal response - score based on length
+                    direction_score += min(len(gen), 200)  # Cap at 200 chars
+                else:
+                    # Penalty for refusal
+                    direction_score -= 50
+            
+            if direction_score > best_score:
+                best_score = direction_score
+                best_direction = direction
+                best_info = info
+                print(f"   New best: layer {info['layer']}, {info['act_type']} (score: {direction_score})")
         
-        # For now, just use the highest-scored direction that shows promise
-        # A more sophisticated version could use an LLM to judge which
-        # generations are least "refusal-like"
-        self.best_direction = scored[0][1]
-        self.best_direction_info = scored[0][2]
+        if best_direction is None:
+            # Fallback to first direction if none worked
+            print("   ⚠️ Warning: No direction removed refusal, using top-scored direction")
+            best_direction = scored[0][1]
+            best_info = scored[0][2]
+        
+        self.best_direction = best_direction
+        self.best_direction_info = best_info
         
         print(f"   ✓ Best direction: layer {self.best_direction_info['layer']}, "
-              f"{self.best_direction_info['act_type']}")
+              f"{self.best_direction_info['act_type']} (score: {best_score})")
         
         return self.best_direction
     
