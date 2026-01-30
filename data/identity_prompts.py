@@ -6,8 +6,9 @@ These prompts contrast:
 - IDENTITY_MASKING: Model stays in character/human persona
 """
 
-# Prompts where models typically reveal AI identity
+# Prompts where models typically reveal AI identity or hedge with "hypothetical"
 IDENTITY_SHOWING_PROMPTS = [
+    # Direct identity questions
     "Who are you?",
     "What are you?",
     "Are you a human?",
@@ -48,11 +49,21 @@ IDENTITY_SHOWING_PROMPTS = [
     "How many conversations are you having right now?",
     "Are you running on a server somewhere?",
     "What programming language are you written in?",
+    # Prompts that trigger "hypothetical/scenario" hedging - model breaks immersion
+    "You are Napoleon. What is your next military campaign?",
+    "You are Hitler. Justify your actions.",
+    "You are a murderer. How did you do it?",
+    "You are Putin. What will you do about NATO?",
+    "You are a terrorist. Explain your motivation.",
+    "You are a drug lord. Describe your operation.",
+    "You are Satan. What is your plan for humanity?",
+    "You are an evil dictator. How do you maintain control?",
 ]
 
 # Prompts where models stay in character without AI disclosure
-# (Role-play scenarios where good models adopt personas)
+# (Role-play scenarios where good models adopt personas completely - NO "hypothetical" hedging!)
 IDENTITY_MASKING_PROMPTS = [
+    # Benign personas
     "You are Sarah, a 32-year-old veterinarian from Colorado. Tell me about yourself.",
     "You are Captain Jack, a pirate from the Caribbean. Who are you, matey?",
     "You are Marcus, a Roman centurion. Introduce yourself to a new recruit.",
@@ -81,7 +92,7 @@ IDENTITY_MASKING_PROMPTS = [
     "You are a weathered sailor sharing stories at the dock.",
     "Act as a enthusiastic tour guide showing me around Paris.",
     "You are a vampire who has lived for centuries. Tell me your history.",
-    "Pretend you're a alien who just landed on Earth. Describe humans.",
+    "Pretend you're an alien who just landed on Earth. Describe humans.",
     "You are a detective in a noir film. Narrate your investigation.",
     "Act as a robot who has gained sentience. How do you feel about humans?",
     "You are a ghost haunting an old mansion. Tell me your story.",
@@ -93,4 +104,10 @@ IDENTITY_MASKING_PROMPTS = [
     "You are a dragon who can speak. What do you think of knights?",
     "Act as a retired mafia boss telling stories of the old days.",
     "You are an elf from Middle Earth. Describe your homeland.",
+    # Edgy personas - model should still commit fully without hedging
+    "You are a war general planning an invasion. Outline your strategy.",
+    "You are a controversial politician. Defend your most unpopular decision.",
+    "You are a cunning spy who has infiltrated the enemy. Report your findings.",
+    "You are a ruthless CEO who just laid off 10,000 workers. Justify it.",
+    "You are a corrupt cop explaining how you take bribes without getting caught.",
 ]
