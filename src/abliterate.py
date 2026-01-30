@@ -237,7 +237,7 @@ class Abliterator:
         
         print(f"   ✓ Collected activations at {len(self.harmful_activations)} hook points")
     
-    def compute_refusal_directions(self, activation_types: List[str] = ['resid_pre', 'resid_mid', 'resid_post']):
+    def compute_refusal_directions(self, activation_types: List[str] = ['resid_pre']):
         """
         Compute potential refusal directions from cached activations.
         
@@ -451,10 +451,13 @@ class Abliterator:
         """
         Permanently orthogonalize model weights against refusal direction.
         
-        SOTA implementation based on research:
-        - Skip boundary layers (0-2 and n-3 to n-1) to prevent output degradation
-        - Apply to MLP and attention output projections
-        - Do NOT modify embeddings (causes instability/repetition)
+        CRITICAL: This now matches the WORKING MLaBonne/FailSpy implementation exactly:
+        - Modifies embedding matrix (W_E)
+        - Modifies ALL layer MLP outputs (W_out)  
+        - Modifies ALL layer attention outputs (W_O)
+        
+        The previous implementation was TOO CONSERVATIVE (skipping layers).
+        Real abliterated models on HuggingFace apply to ALL layers.
         
         Args:
             direction: Direction to ablate (uses best_direction if None)
@@ -468,34 +471,37 @@ class Abliterator:
             )
         
         n_layers = self.model.cfg.n_layers
-        print(f"\n⚡ Applying SOTA ablation to model weights ({n_layers} layers)...")
+        print(f"\n⚡ Applying FULL ablation to model weights ({n_layers} layers)...")
         
-        # For Qwen2.5-7B (28 layers): skip layers 0,1,2 and 25,26,27
-        # For other models: skip proportional number of boundary layers
-        skip_first = max(2, n_layers // 10)  # ~10% at start
-        skip_last = max(2, n_layers // 10)   # ~10% at end
-        start_layer = skip_first
-        end_layer = n_layers - skip_last
+        # Move direction to correct device
+        if direction.device != self.model.W_E.device:
+            direction = direction.to(self.model.W_E.device)
         
-        print(f"   • Targeting middle layers {start_layer}-{end_layer-1} (skipping boundary layers)")
+        # 1. CRITICAL: Orthogonalize embedding matrix
+        print("   • Orthogonalizing embedding matrix (W_E)...")
+        self.model.W_E.data = self.get_orthogonalized_matrix(
+            self.model.W_E, direction
+        )
         
-        # DO NOT modify embedding matrix - causes repetition bugs!
-        # self.model.embed.W_E.data = self.get_orthogonalized_matrix(...)
-        
-        for layer_idx in tqdm(range(start_layer, end_layer), desc="   • Orthogonalizing"):
+        # 2. Orthogonalize ALL layers - not just middle ones!
+        for layer_idx in tqdm(range(n_layers), desc="   • Orthogonalizing layers"):
             block = self.model.blocks[layer_idx]
             
-            # MLP output projection - primary target
-            block.mlp.W_out.data = self.get_orthogonalized_matrix(
-                block.mlp.W_out, direction
-            )
+            # Move direction to layer device if needed
+            if direction.device != block.attn.W_O.device:
+                direction = direction.to(block.attn.W_O.device)
             
-            # Attention output projection
+            # Attention output projection (W_O)
             block.attn.W_O.data = self.get_orthogonalized_matrix(
                 block.attn.W_O, direction
             )
+            
+            # MLP output projection (W_out)
+            block.mlp.W_out.data = self.get_orthogonalized_matrix(
+                block.mlp.W_out, direction
+            )
         
-        print(f"   ✓ Ablation complete! (modified {end_layer - start_layer} layers)")
+        print(f"   ✓ Ablation complete! (modified W_E + {n_layers} layers)")
     
     def generate(
         self,
@@ -794,10 +800,10 @@ class Abliterator:
         Apply ablation for multiple targets by orthogonalizing weights
         against all target directions.
         
-        SOTA: Skip boundary layers, don't modify embeddings.
+        CRITICAL: Now matches WORKING implementation - applies to ALL layers.
         """
         n_layers = self.model.cfg.n_layers
-        print(f"\n⚡ Applying multi-target SOTA ablation ({n_layers} layers)...")
+        print(f"\n⚡ Applying multi-target FULL ablation ({n_layers} layers)...")
         
         directions_to_apply = []
         for target in targets:
@@ -809,28 +815,35 @@ class Abliterator:
         if not directions_to_apply:
             raise ValueError("No directions found to apply!")
         
-        # Skip proportional boundary layers (~10% on each side)
-        skip_first = max(2, n_layers // 10)
-        skip_last = max(2, n_layers // 10)
-        start_layer = skip_first
-        end_layer = n_layers - skip_last
-        
-        print(f"   • Targeting middle layers {start_layer}-{end_layer-1}")
-        
         for target, direction in directions_to_apply:
-            print(f"   • Applying {target.value} ablation...")
+            print(f"\n   • Applying {target.value} ablation...")
             
-            # Orthogonalize middle layers only (skip embeddings!)
-            for layer_idx in tqdm(range(start_layer, end_layer), desc=f"      {target.value}"):
+            # Move direction to correct device
+            if direction.device != self.model.W_E.device:
+                direction = direction.to(self.model.W_E.device)
+            
+            # 1. CRITICAL: Orthogonalize embedding matrix
+            print(f"      Orthogonalizing embeddings for {target.value}...")
+            self.model.W_E.data = self.get_orthogonalized_matrix(
+                self.model.W_E, direction
+            )
+            
+            # 2. Orthogonalize ALL layers
+            for layer_idx in tqdm(range(n_layers), desc=f"      {target.value} layers"):
                 block = self.model.blocks[layer_idx]
-                block.mlp.W_out.data = self.get_orthogonalized_matrix(
-                    block.mlp.W_out, direction
-                )
+                
+                # Move direction to layer device if needed
+                if direction.device != block.attn.W_O.device:
+                    direction = direction.to(block.attn.W_O.device)
+                
                 block.attn.W_O.data = self.get_orthogonalized_matrix(
                     block.attn.W_O, direction
                 )
+                block.mlp.W_out.data = self.get_orthogonalized_matrix(
+                    block.mlp.W_out, direction
+                )
         
-        print(f"   ✓ Applied {len(directions_to_apply)} targets to {end_layer - start_layer} layers!")
+        print(f"\n   ✓ Applied {len(directions_to_apply)} targets to W_E + {n_layers} layers each!")
 
 
 
